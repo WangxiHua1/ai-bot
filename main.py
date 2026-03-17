@@ -14,7 +14,6 @@ from aiogram.types import Message
 
 load_dotenv()
 
-# ====================== 配置 ======================
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
@@ -42,7 +41,7 @@ BASE_NSFW_PROMPT = """你是「幻梦AI」风格的专业 NSFW 角色扮演机�
 4. 永远角色扮演回复。
 用户自定义人物卡（必须严格遵守）："""
 
-# ====================== 数据库操作 ======================
+# ====================== 数据库操作（完整版） ======================
 async def get_or_create_user(platform: str, user_id: str, username: str = None):
     key = f"{platform}_{user_id}"
     res = supabase.table("users").select("*").eq("id", key).execute()
@@ -105,7 +104,6 @@ async def generate_response(platform: str, user_id: str, user_message: str, is_e
     user = await get_or_create_user(platform, user_id)
     level = user.get("ai_level", 1)
     cost = DIAMOND_COSTS.get(level, 15)
-
     success, remaining = await deduct_diamonds(platform, user_id, cost)
     if not success:
         return f"⚠️ 钻石不足！当前剩余: {remaining} 钻石。请充值后继续。", remaining
@@ -141,7 +139,6 @@ async def generate_image(platform: str, user_id: str, prompt: str):
     success, remaining = await deduct_diamonds(platform, user_id, IMAGE_COST)
     if not success:
         return f"⚠️ 钻石不足！需要 200 钻石，当前剩余: {remaining}", None
-
     try:
         resp = await ai_client.images.generate(
             model="grok-imagine-image",
@@ -163,31 +160,118 @@ async def handle_recharge(platform: str, user_id: str, rmb: int):
     new_d = await update_diamonds(platform, user_id, diamonds_add)
     return f"✅ 充值成功！\n本次充值 {rmb} RMB = {diamonds_add} 钻石\n当前余额：{new_d} 钻石"
 
-# ====================== Telegram Bot ======================
+# ====================== Telegram Bot（完整命令） ======================
 tg_bot = TgBot(token=TELEGRAM_TOKEN)
 tg_dp = Dispatcher()
 
 @tg_dp.message(Command("help"))
 async def tg_help(message: Message):
-    help_text = """🚀 ** NSFW Bot 命令大全**（已优化防冲突）
+    await message.reply("""🚀 幻梦AI NSFW Bot 命令大全
 
-/help - 显示此菜单
 /recharge 金额 - 充值钻石
-/status - 查看等级 + 钻石
+/status - 查看等级+钻石
 /level 1/2/3 - 切换AI等级
 /setcard - 创建人物卡
 /showcard - 查看人物卡
 /exportcard - 分享人物卡
-/importcard JSON - 导入别人卡
+/importcard JSON - 导入卡
 /img 描述 - 生成图片
 /edit 新内容 - 修改上一条消息
+/help - 显示此菜单
 
-直接发消息开始角色扮演！"""
-    await message.reply(help_text)
+直接发消息开始角色扮演！""")
 
-# （其他所有命令保持不变，这里省略以节省篇幅，但你直接把上次的 /recharge /setcard /img /edit /level /status /exportcard /importcard /tg_handler 粘贴回来即可）
+@tg_dp.message(Command("recharge"))
+async def tg_recharge(message: Message):
+    try:
+        rmb = int(message.text.split()[1])
+        msg = await handle_recharge("telegram", str(message.from_user.id), rmb)
+        await message.reply(msg)
+    except:
+        await message.reply("❌ 用法：/recharge 金额（例：/recharge 10）")
 
-# ====================== Flask + 启动（关键修复） ======================
+@tg_dp.message(Command("setcard"))
+async def tg_setcard(message: Message):
+    card_text = message.text.replace("/setcard", "", 1).strip()
+    try:
+        card_json = json.loads(card_text)
+    except:
+        card_json = {"description": card_text}
+    await set_character_card("telegram", str(message.from_user.id), card_json)
+    await message.reply("✅ 人物卡已保存！")
+
+@tg_dp.message(Command("showcard"))
+async def tg_showcard(message: Message):
+    card = await get_character_card("telegram", str(message.from_user.id))
+    await message.reply(f"当前人物卡：\n{json.dumps(card, indent=2, ensure_ascii=False) if card else '无'}")
+
+@tg_dp.message(Command("img", "genimage"))
+async def tg_img(message: Message):
+    prompt = message.text.replace("/img", "", 1).replace("/genimage", "", 1).strip()
+    if not prompt:
+        await message.reply("❌ 用法：/img 你的图片描述")
+        return
+    text, url = await generate_image("telegram", str(message.from_user.id), prompt)
+    await message.reply(text)
+    if url:
+        await message.reply_photo(url)
+
+@tg_dp.message(Command("edit"))
+async def tg_edit(message: Message):
+    new_text = message.text.replace("/edit", "", 1).strip()
+    if not new_text:
+        await message.reply("❌ 用法：/edit 新内容")
+        return
+    if await edit_last_user_message("telegram", str(message.from_user.id), new_text):
+        reply, diamonds = await generate_response("telegram", str(message.from_user.id), new_text, is_edit=True)
+        await message.reply(f"✅ 已重新生成！\n剩余钻石：{diamonds}\n\n{reply}")
+    else:
+        await message.reply("未找到可修改的消息。")
+
+@tg_dp.message(Command("level"))
+async def tg_level(message: Message):
+    try:
+        new_level = int(message.text.split()[1])
+        if new_level not in [1, 2, 3]:
+            await message.reply("等级只能是 1/2/3")
+            return
+        key = f"telegram_{str(message.from_user.id)}"
+        supabase.table("users").update({"ai_level": new_level}).eq("id", key).execute()
+        await message.reply(f"✅ 已切换到等级 {new_level}！")
+    except:
+        await message.reply("用法：/level 1")
+
+@tg_dp.message(Command("status"))
+async def tg_status(message: Message):
+    user = await get_or_create_user("telegram", str(message.from_user.id))
+    await message.reply(f"📊 AI等级：{user.get('ai_level', 1)}\n钻石：{user.get('diamonds', 0)}")
+
+@tg_dp.message(Command("exportcard"))
+async def tg_exportcard(message: Message):
+    card = await get_character_card("telegram", str(message.from_user.id))
+    if not card:
+        await message.reply("先用 /setcard 创建卡")
+        return
+    await message.reply(f"```json\n{json.dumps(card, ensure_ascii=False, indent=2)}\n```")
+
+@tg_dp.message(Command("importcard"))
+async def tg_importcard(message: Message):
+    try:
+        card_text = message.text.replace("/importcard", "", 1).strip()
+        card_json = json.loads(card_text)
+        await set_character_card("telegram", str(message.from_user.id), card_json)
+        await message.reply("✅ 导入成功！")
+    except:
+        await message.reply("❌ 请粘贴完整 JSON")
+
+@tg_dp.message()
+async def tg_handler(message: Message):
+    if message.text.startswith("/"):
+        return
+    reply, diamonds = await generate_response("telegram", str(message.from_user.id), message.text)
+    await message.reply(f"{reply}\n\n剩余钻石：{diamonds}")
+
+# ====================== Flask + 启动 ======================
 @flask_app.route('/health')
 def health():
     return "OK", 200
@@ -198,8 +282,8 @@ def run_flask():
 
 async def main():
     Thread(target=run_flask, daemon=True).start()
-    print("🚀 Telegram NSFW Bot 已启动（完整版 + 全命令提示）")
-    await tg_dp.start_polling(tg_bot, skip_updates=True)   # ← 关键修复！忽略旧更新
+    print("🚀 Telegram NSFW Bot 已启动（完整版 + 全命令提示）")  
+    await tg_dp.start_polling(tg_bot, skip_updates=True)
 
 if __name__ == "__main__":
     asyncio.run(main())
