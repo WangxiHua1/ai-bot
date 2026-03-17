@@ -2,7 +2,6 @@ import asyncio
 import os
 import json
 from datetime import datetime
-from threading import Thread
 import threading
 
 from dotenv import load_dotenv
@@ -33,8 +32,8 @@ def home():
 def run_flask():
     port = int(os.getenv("PORT", 8080))
     app.run(host='0.0.0.0', port=port, debug=False)
-    
-# ======================
+
+# ====================== 常量 ======================
 DIAMOND_COSTS = {1: 15, 2: 40, 3: 90}
 IMAGE_COST = 200
 
@@ -52,7 +51,7 @@ BASE_NSFW_PROMPT = """你是一个专业的 NSFW 角色扮演机器人。
 4. 永远角色扮演回复。
 用户自定义人物卡（必须严格遵守）："""
 
-# ====================== 数据库操作（完整版） ======================
+# ====================== 数据库操作 ======================
 async def get_or_create_user(platform: str, user_id: str, username: str = None):
     key = f"{platform}_{user_id}"
     res = supabase.table("users").select("*").eq("id", key).execute()
@@ -110,7 +109,7 @@ async def edit_last_user_message(platform: str, user_id: str, new_content: str):
             return True
     return False
 
-# ====================== AI 文字生成 ======================
+# ====================== AI 生成（使用 reasoning 模型） ======================
 async def generate_response(platform: str, user_id: str, user_message: str, is_edit=False):
     user = await get_or_create_user(platform, user_id)
     level = user.get("ai_level", 1)
@@ -132,7 +131,7 @@ async def generate_response(platform: str, user_id: str, user_message: str, is_e
 
     try:
         resp = await ai_client.chat.completions.create(
-            model="grok-4-1-fast-reasoning",
+            model="grok-4-1-fast-reasoning",   # ← 已切换为推理强版
             messages=messages,
             temperature=0.9,
             max_tokens=1500,
@@ -144,8 +143,7 @@ async def generate_response(platform: str, user_id: str, user_message: str, is_e
     except Exception as e:
         await update_diamonds(platform, user_id, cost)
         return f"AI 生成出错: {str(e)}", user["diamonds"]
-
-# ====================== 图像生成 ======================
+        # ====================== 图片生成 ======================
 async def generate_image(platform: str, user_id: str, prompt: str):
     success, remaining = await deduct_diamonds(platform, user_id, IMAGE_COST)
     if not success:
@@ -163,15 +161,7 @@ async def generate_image(platform: str, user_id: str, prompt: str):
         await update_diamonds(platform, user_id, IMAGE_COST)
         return f"图片生成失败: {str(e)}", None
 
-# ====================== 充值 ======================
-async def handle_recharge(platform: str, user_id: str, rmb: int):
-    if rmb <= 0:
-        return "金额必须 > 0"
-    diamonds_add = rmb * 1000
-    new_d = await update_diamonds(platform, user_id, diamonds_add)
-    return f"✅ 充值成功！\n本次充值 {rmb} RMB = {diamonds_add} 钻石\n当前余额：{new_d} 钻石"
-
-# ====================== Telegram Bot（完整命令） ======================
+# ====================== Telegram Bot ======================
 tg_bot = TgBot(token=TELEGRAM_TOKEN)
 tg_dp = Dispatcher()
 
@@ -282,12 +272,9 @@ async def tg_handler(message: Message):
     reply, diamonds = await generate_response("telegram", str(message.from_user.id), message.text)
     await message.reply(f"{reply}\n\n剩余钻石：{diamonds}")
 
-# ======================  启动 ======================
-def start_flask():
-    threading.Thread(target=run_flask, daemon=True).start()
-
+# ====================== 启动 ======================
 async def main():
-    start_flask()  
+    threading.Thread(target=run_flask, daemon=True).start()
     print("🚀 Telegram NSFW Bot 已启动")
     await tg_dp.start_polling(tg_bot, skip_updates=True)
 
