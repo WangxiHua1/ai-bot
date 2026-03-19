@@ -183,9 +183,6 @@ def edited(msg):
 def run_bot():
     print("🚀 Gemini 纯DND剧本杀 Bot 已启动")
     bot.infinity_polling()
-def run_bot():
-    print("🚀 Gemini 纯DND剧本杀 Bot 已启动")
-    bot.infinity_polling()
 
 # ============== Flask 健康检查（Railway 必须有这个才能显示 UP） ==============
 app = Flask(__name__)
