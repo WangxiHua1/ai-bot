@@ -4,14 +4,10 @@ import google.generativeai as genai
 from supabase import create_client
 from dotenv import load_dotenv
 import io
+from flask import Flask
+import threading
 
 load_dotenv()
-
-app = Flask(__name__)
-
-@app.route('/')
-def home():
-    return "✅ DND剧本杀 Bot 正常运行！UptimeRobot 已监测到 UP"
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 SUPABASE_URL = os.getenv("SUPABASE_URL")
@@ -183,7 +179,29 @@ def chat(msg):
 def edited(msg):
     if deduct_diamonds(msg.from_user.id, get_or_create_user(msg.from_user.id, "")["ai_level"] * 12):
         bot.reply_to(msg, "✅ 编辑消息已扣钻石，DM重新推进剧情")
+        
+def run_bot():
+    print("🚀 Gemini 纯DND剧本杀 Bot 已启动")
+    bot.infinity_polling()
+def run_bot():
+    print("🚀 Gemini 纯DND剧本杀 Bot 已启动")
+    bot.infinity_polling()
+
+# ============== Flask 健康检查（Railway 必须有这个才能显示 UP） ==============
+app = Flask(__name__)
+
+@app.route('/')
+def home():
+    return "✅ DND剧本杀 Bot 正常运行！UptimeRobot 已监测到 UP"
 
 if __name__ == "__main__":
     print("🚀 Gemini 纯DND剧本杀 Bot 已启动")
-    bot.infinity_polling()
+    
+    # Bot 在后台线程运行（防止阻塞 Flask）
+    bot_thread = threading.Thread(target=bot.infinity_polling)
+    bot_thread.daemon = True
+    bot_thread.start()
+    
+    # 启动 Flask（Railway 要求的端口）
+    port = int(os.getenv("PORT", 8080))
+    app.run(host='0.0.0.0', port=port)
