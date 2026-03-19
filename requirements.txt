@@ -2,3 +2,4 @@ pyTelegramBotAPI
 supabase
 python-dotenv
 google-generativeai
+flask
