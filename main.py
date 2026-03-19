@@ -49,13 +49,13 @@ def webhook():
     return 'ERROR', 400
 
 
-# ============== 测试命令（确认 Bot 活了） ==============
+# ============== 测试命令 ==============
 @bot.message_handler(commands=['ping'])
 def ping(msg):
     bot.reply_to(msg, "✅ Webhook 正常！Bot 已收到消息！\n\n现在试试 /start")
 
 
-# ============== 用户 & 钻石系统 ==============
+# ============== 用户 & 钻石系统（已修复 mode 字段）==============
 def get_or_create_user(tg_id: int, username: str):
     if tg_id in user_cache:
         return user_cache[tg_id]
@@ -63,7 +63,13 @@ def get_or_create_user(tg_id: int, username: str):
     if res.data:
         user = res.data[0]
     else:
-        user = {"telegram_id": tg_id, "username": username, "diamonds": 5000, "ai_level": 1}
+        user = {
+            "telegram_id": tg_id,
+            "username": username,
+            "diamonds": 5000,
+            "ai_level": 1,
+            "mode": "normal"          # ← 关键修复！匹配你的 Supabase 表结构
+        }
         supabase.table("users").insert(user).execute()
     user_cache[tg_id] = user
     return user
@@ -102,7 +108,7 @@ def start(msg):
 
 @bot.message_handler(commands=['myid'])
 def my_id(msg):
-    bot.reply_to(msg, f"✅ 你的 Telegram ID 是：\n**{msg.from_user.id}** \n\n直接复制这个数字，粘贴到 Railway 的 GM_ID 变量里就行了！")
+    bot.reply_to(msg, f"✅ 你的 Telegram ID 是：\n**{msg.from_user.id}**")
 
 
 @bot.message_handler(commands=['level'])
@@ -130,9 +136,7 @@ def gen_image(msg):
         response = client.models.generate_content(
             model=IMAGE_MODEL,
             contents=f"高质量DND剧本杀风格图片：{prompt}，沉浸式氛围，细节丰富",
-            config=types.GenerateContentConfig(
-                response_modalities=["IMAGE"]
-            )
+            config=types.GenerateContentConfig(response_modalities=["IMAGE"])
         )
         image_bytes = None
         for part in response.parts:
