@@ -193,12 +193,24 @@ def home():
 
 if __name__ == "__main__":
     print("🚀 Gemini 纯DND剧本杀 Bot 已启动")
-    
-    # Bot 在后台线程运行（防止阻塞 Flask）
-    bot_thread = threading.Thread(target=bot.infinity_polling)
+    print("🔧 Bot 线程准备启动...")
+
+    def run_polling():
+        try:
+            print("📡 Bot polling 已启动！现在可以发 /start 测试了")
+            bot.infinity_polling(
+                none_stop=True,
+                interval=0,
+                timeout=20,
+                drop_pending_updates=True   # ← 关键：丢弃旧冲突消息
+            )
+        except Exception as e:
+            print(f"❌ Polling 崩溃: {e}")
+
+    bot_thread = threading.Thread(target=run_polling)
     bot_thread.daemon = True
     bot_thread.start()
-    
-    # 启动 Flask（Railway 要求的端口）
+
+    # Flask 健康检查
     port = int(os.getenv("PORT", 8080))
     app.run(host='0.0.0.0', port=port)
