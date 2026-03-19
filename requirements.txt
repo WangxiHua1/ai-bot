@@ -1,5 +1,5 @@
 pyTelegramBotAPI
 supabase
 python-dotenv
-google-generativeai
+google-genai
 flask
