@@ -4,9 +4,8 @@ import io
 from flask import Flask, request
 from supabase import create_client
 from dotenv import load_dotenv
-from google import genai
+import google.genai as genai
 from google.genai import types
-import threading
 
 load_dotenv()
 
@@ -15,19 +14,19 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-GM_ID = int(os.getenv("GM_ID", 0))
-RAILWAY_PUBLIC_DOMAIN = os.getenv("RAILWAY_PUBLIC_DOMAIN")  # Railway 自动注入
+GM_ID = int(os.getenv("GM_ID") or 0)
+RAILWAY_PUBLIC_DOMAIN = os.getenv("RAILWAY_PUBLIC_DOMAIN")
 
 bot = telebot.TeleBot(BOT_TOKEN)
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-# ==================== 新版 Gemini SDK ====================
+# ==================== Gemini 新版 SDK ====================
 client = genai.Client(api_key=GEMINI_API_KEY)
 TEXT_MODEL = "gemini-2.5-flash"
 IMAGE_MODEL = "gemini-2.5-flash-image"
 
 user_cache = {}
-histories = {}        # 存储每个用户的 chat 对象
+histories = {}
 active_cards = {}
 pending_cards = {}
 
@@ -42,13 +41,18 @@ def home():
 
 @app.route('/webhook', methods=['POST'])
 def webhook():
-    """Telegram Webhook 入口（解决 409 冲突）"""
     if request.headers.get('content-type') == 'application/json':
         json_string = request.get_data(as_text=True)
         update = telebot.types.Update.de_json(json_string)
         bot.process_new_updates([update])
         return 'OK', 200
     return 'ERROR', 400
+
+
+# ============== 测试命令（确认 Bot 活了） ==============
+@bot.message_handler(commands=['ping'])
+def ping(msg):
+    bot.reply_to(msg, "✅ Webhook 正常！Bot 已收到消息！\n\n现在试试 /start")
 
 
 # ============== 用户 & 钻石系统 ==============
@@ -93,7 +97,12 @@ def get_system_prompt(level: int, card=None):
 def start(msg):
     user = get_or_create_user(msg.from_user.id, msg.from_user.username)
     bot.reply_to(msg,
-                 f"✅ 欢迎来到纯DND剧本杀！赠送 **5000钻石** 💎\n当前DM等级：{user['ai_level']}\n\n指令：\n/level 1-5\n/gen 生成图片\n/recharge 卡密\n/savecard 创建角色卡")
+                 f"✅ 欢迎来到纯DND剧本杀！赠送 **5000钻石** 💎\n当前DM等级：{user['ai_level']}\n\n指令：\n/level 1-5\n/gen 生成图片\n/recharge 卡密\n/savecard 创建角色卡\n/usecard ID\n/myid 查看你的ID\n/ping 测试")
+
+
+@bot.message_handler(commands=['myid'])
+def my_id(msg):
+    bot.reply_to(msg, f"✅ 你的 Telegram ID 是：\n**{msg.from_user.id}** \n\n直接复制这个数字，粘贴到 Railway 的 GM_ID 变量里就行了！")
 
 
 @bot.message_handler(commands=['level'])
@@ -155,7 +164,7 @@ def recharge(msg):
         bot.reply_to(msg, "用法：/recharge 卡密")
 
 
-# ============== GM 命令（完整版） ==============
+# ============== GM 命令 ==============
 @bot.message_handler(commands=['gift'])
 def gm_gift(msg):
     if msg.from_user.id != GM_ID:
@@ -203,7 +212,7 @@ def use_card(msg):
         bot.reply_to(msg, "用法：/usecard ID")
 
 
-# ============== 主聊天（使用新 SDK + 历史对话） ==============
+# ============== 主聊天 ==============
 @bot.message_handler(func=lambda m: True)
 def chat(msg):
     user_id = msg.from_user.id
@@ -230,7 +239,7 @@ def chat(msg):
 
     if user_id not in histories:
         histories[user_id] = client.chats.create(model=TEXT_MODEL)
-        histories[user_id].send_message(system)   # 第一条消息设置为系统提示
+        histories[user_id].send_message(system)
 
     try:
         response = histories[user_id].send_message(msg.text)
@@ -251,12 +260,10 @@ def edited(msg):
 if __name__ == "__main__":
     print("🚀 Gemini 纯DND剧本杀 Bot 已启动（Webhook 模式）")
 
-    # 设置 Webhook
     bot.remove_webhook()
     webhook_url = f"https://{RAILWAY_PUBLIC_DOMAIN}/webhook"
-    bot.set_webhook(url=webhook_url)
-    print(f"✅ Webhook 已设置为：{webhook_url}")
+    bot.set_webhook(url=webhook_url, drop_pending_updates=True)
+    print(f"✅ Webhook 已设置为：{webhook_url}（已清除旧消息）")
 
-    # 启动 Flask
     port = int(os.getenv("PORT", 8080))
     app.run(host='0.0.0.0', port=port)
