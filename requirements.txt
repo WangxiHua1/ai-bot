@@ -1,5 +1,4 @@
-aiogram
+pyTelegramBotAPI
 supabase
 python-dotenv
-flask
-openai
+google-generativeai
