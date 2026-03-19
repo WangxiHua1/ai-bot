@@ -7,6 +7,12 @@ import io
 
 load_dotenv()
 
+app = Flask(__name__)
+
+@app.route('/')
+def home():
+    return "✅ DND剧本杀 Bot 正常运行！UptimeRobot 已监测到 UP"
+
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
