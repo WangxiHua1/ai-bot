@@ -20,7 +20,7 @@ RAILWAY_PUBLIC_DOMAIN = os.getenv("RAILWAY_PUBLIC_DOMAIN")
 bot = telebot.TeleBot(BOT_TOKEN)
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-# ==================== Gemini 新版 SDK ====================
+# ==================== Gemini ====================
 client = genai.Client(api_key=GEMINI_API_KEY)
 TEXT_MODEL = "gemini-2.5-flash"
 IMAGE_MODEL = "gemini-2.5-flash-image"
@@ -30,14 +30,12 @@ histories = {}
 active_cards = {}
 pending_cards = {}
 
-# ============== Flask 健康检查 + Webhook ==============
+# ============== Flask ==============
 app = Flask(__name__)
-
 
 @app.route('/')
 def home():
     return "✅ DND剧本杀 Bot 正常运行！UptimeRobot 已监测到 UP"
-
 
 @app.route('/webhook', methods=['POST'])
 def webhook():
@@ -49,36 +47,38 @@ def webhook():
     return 'ERROR', 400
 
 
-# ============== 测试命令 ==============
-@bot.message_handler(commands=['ping'])
-def ping(msg):
-    bot.reply_to(msg, "✅ Webhook 正常！Bot 已收到消息！\n\n现在试试 /start")
-
-
-# ============== 用户 & 钻石系统（已修复 mode 字段）==============
+# ============== 用户系统（加错误保护 + 匹配你的表结构） ==============
 def get_or_create_user(tg_id: int, username: str):
-    if tg_id in user_cache:
-        return user_cache[tg_id]
-    res = supabase.table("users").select("*").eq("telegram_id", tg_id).execute()
-    if res.data:
-        user = res.data[0]
-    else:
-        user = {
-            "telegram_id": tg_id,
-            "username": username,
-            "diamonds": 5000,
-            "ai_level": 1,
-            "mode": "normal"          # ← 关键修复！匹配你的 Supabase 表结构
-        }
-        supabase.table("users").insert(user).execute()
-    user_cache[tg_id] = user
-    return user
+    try:
+        if tg_id in user_cache:
+            return user_cache[tg_id]
+        res = supabase.table("users").select("*").eq("telegram_id", tg_id).execute()
+        if res.data:
+            user = res.data[0]
+        else:
+            user = {
+                "telegram_id": tg_id,
+                "username": username or "unknown",
+                "diamonds": 5000,
+                "ai_level": 1,
+                "mode": "normal"          # 匹配你的 Supabase 表
+            }
+            supabase.table("users").insert(user).execute()
+            user = supabase.table("users").select("*").eq("telegram_id", tg_id).execute().data[0]
+        user_cache[tg_id] = user
+        return user
+    except Exception as e:
+        print(f"用户创建出错: {e}")
+        return {"telegram_id": tg_id, "username": username or "unknown", "diamonds": 5000, "ai_level": 1, "mode": "normal"}
 
 
 def update_user(tg_id, **kwargs):
-    if tg_id in user_cache:
-        user_cache[tg_id].update(kwargs)
-    supabase.table("users").update(kwargs).eq("telegram_id", tg_id).execute()
+    try:
+        if tg_id in user_cache:
+            user_cache[tg_id].update(kwargs)
+        supabase.table("users").update(kwargs).eq("telegram_id", tg_id).execute()
+    except Exception as e:
+        print(f"更新用户出错: {e}")
 
 
 def deduct_diamonds(tg_id: int, cost: int) -> bool:
@@ -90,20 +90,26 @@ def deduct_diamonds(tg_id: int, cost: int) -> bool:
 
 
 def get_system_prompt(level: int, card=None):
-    base = f"你是专业的DND剧本杀 Dungeon Master（DM），等级{level}（越高剧情越复杂、细节越丰富、推理越智能）。\n"
-    base += "用第二人称沉浸式叙事，推进主线剧情，描述NPC对话、场景氛围、感官细节、线索和悬疑转折。\n"
-    base += "玩家是主角，保持公平、紧张刺激的剧本杀氛围，绝不剧透结局。"
+    base = f"你是专业的DND剧本杀 Dungeon Master（DM），等级{level}（越高剧情越复杂、细节越丰富、推理越智能）。\n用第二人称沉浸式叙事，推进主线剧情，描述NPC对话、场景氛围、感官细节、线索和悬疑转折。\n玩家是主角，保持公平、紧张刺激的剧本杀氛围，绝不剧透结局。"
     if card:
         base += f"\n当前角色卡：{card['name']} - {card['system_prompt']}"
     return base
 
 
-# ============== 命令 ==============
+# ============== 命令（全部放在最前面！解决顺序问题） ==============
+@bot.message_handler(commands=['ping'])
+def ping(msg):
+    bot.reply_to(msg, "✅ Webhook 正常！Bot 已收到消息！\n\n现在试试 /start")
+
+
 @bot.message_handler(commands=['start'])
 def start(msg):
-    user = get_or_create_user(msg.from_user.id, msg.from_user.username)
-    bot.reply_to(msg,
-                 f"✅ 欢迎来到纯DND剧本杀！赠送 **5000钻石** 💎\n当前DM等级：{user['ai_level']}\n\n指令：\n/level 1-5\n/gen 生成图片\n/recharge 卡密\n/savecard 创建角色卡\n/usecard ID\n/myid 查看你的ID\n/ping 测试")
+    try:
+        user = get_or_create_user(msg.from_user.id, msg.from_user.username)
+        bot.reply_to(msg,
+                     f"✅ 欢迎来到纯DND剧本杀！赠送 **5000钻石** 💎\n当前DM等级：{user['ai_level']}\n\n指令：\n/level 1-5\n/gen 生成图片\n/recharge 卡密\n/savecard 创建角色卡\n/usecard ID\n/myid 查看你的ID\n/ping 测试")
+    except Exception as e:
+        bot.reply_to(msg, f"启动失败：{str(e)[:100]}")
 
 
 @bot.message_handler(commands=['myid'])
@@ -168,11 +174,9 @@ def recharge(msg):
         bot.reply_to(msg, "用法：/recharge 卡密")
 
 
-# ============== GM 命令 ==============
 @bot.message_handler(commands=['gift'])
 def gm_gift(msg):
-    if msg.from_user.id != GM_ID:
-        return
+    if msg.from_user.id != GM_ID: return
     try:
         tg_id = int(msg.text.split()[1])
         amount = int(msg.text.split()[2])
@@ -185,12 +189,10 @@ def gm_gift(msg):
 
 @bot.message_handler(commands=['addcard'])
 def gm_addcard(msg):
-    if msg.from_user.id != GM_ID:
-        return
+    if msg.from_user.id != GM_ID: return
     bot.reply_to(msg, "GM专用：请使用 /savecard 功能让玩家自己创建")
 
 
-# ============== 角色卡 ==============
 @bot.message_handler(commands=['savecard'])
 def save_card(msg):
     try:
@@ -216,7 +218,7 @@ def use_card(msg):
         bot.reply_to(msg, "用法：/usecard ID")
 
 
-# ============== 主聊天 ==============
+# ============== 主聊天（放在最后！） ==============
 @bot.message_handler(func=lambda m: True)
 def chat(msg):
     user_id = msg.from_user.id
