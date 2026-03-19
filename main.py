@@ -201,16 +201,16 @@ if __name__ == "__main__":
             bot.infinity_polling(
                 none_stop=True,
                 interval=0,
-                timeout=20,
-                drop_pending_updates=True   # ← 关键：丢弃旧冲突消息
+                timeout=20
             )
         except Exception as e:
             print(f"❌ Polling 崩溃: {e}")
 
+    # 启动 Bot 线程（后台运行）
     bot_thread = threading.Thread(target=run_polling)
     bot_thread.daemon = True
     bot_thread.start()
-
-    # Flask 健康检查
+    
+    # 启动 Flask 健康检查（Railway 必须）
     port = int(os.getenv("PORT", 8080))
     app.run(host='0.0.0.0', port=port)
