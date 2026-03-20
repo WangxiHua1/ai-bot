@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>幻梦 DND 角色广场</title>
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <style>
+    body { background:#1a0033; color:#fff; font-family: system-ui; margin:0; padding:20px; }
+    .card { background:#2a0044; border-radius:12px; padding:15px; margin:10px 0; cursor:pointer; }
+    .nsfw { background:#ff00aa; padding:2px 8px; border-radius:999px; font-size:12px; }
+    button { background:#a855f7; color:white; border:none; padding:12px; border-radius:8px; width:100%; margin:10px 0; }
+  </style>
+</head>
+<body>
+  <h1>🎭 角色广场</h1>
+  <button onclick="createCard()">+ 创建新角色卡</button>
+  <div id="roles"></div>
+
+  <script>
+    const webApp = window.Telegram.WebApp;
+    webApp.ready();
+    const user = webApp.initDataUnsafe.user;
+    const userId = user.id;
+
+    // 加载角色
+    async function loadRoles() {
+      const res = await fetch('/api/roles');
+      const json = await res.json();
+      let html = '';
+      json.data.forEach(c => {
+        html += `<div class="card" onclick="useCard(${c.id})">
+          <b>${c.name}</b><span class="nsfw">NSFW</span><br>
+          <small>${c.system_prompt.substring(0,80)}...</small>
+        </div>`;
+      });
+      document.getElementById('roles').innerHTML = html || '<p>还没有角色卡，快去创建！</p>';
+    }
+
+    async function createCard() {
+      const name = prompt("角色名称？");
+      const prompt = prompt("角色设定（系统提示词）？");
+      if (!name || !prompt) return;
+      await fetch('/api/create-card', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({owner_id: userId, name, system_prompt: prompt})
+      });
+      loadRoles();
+    }
+
+    async function useCard(cardId) {
+      const msg = prompt("发送消息给这个角色：");
+      if (!msg) return;
+      const res = await fetch('/api/chat', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({user_id: userId, message: msg, card_id: cardId})
+      });
+      const json = await res.json();
+      alert("DM回复：\n" + json.reply);
+    }
+
+    // 启动
+    loadRoles();
+  </script>
+</body>
+</html>
