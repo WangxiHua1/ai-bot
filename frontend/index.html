@@ -3,10 +3,10 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>幻梦 DND 角色广场</title>
+  <title>DND 角色广场</title>
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
   <style>
-    body { background:#1a0033; color:#fff; font-family: system-ui; margin:0; padding:20px; }
+    body { background:#1a0033; color:#fff; font-family:system-ui; margin:0; padding:20px; }
     .card { background:#2a0044; border-radius:12px; padding:15px; margin:10px 0; cursor:pointer; }
     .nsfw { background:#ff00aa; padding:2px 8px; border-radius:999px; font-size:12px; }
     button { background:#a855f7; color:white; border:none; padding:12px; border-radius:8px; width:100%; margin:10px 0; }
@@ -23,14 +23,17 @@
     const user = webApp.initDataUnsafe.user;
     const userId = user.id;
 
-    // 加载角色
+    // ←←←←←←←←←←←←←←←←←←←←←←←←←←←←
+    //ai-bot 服务域名
+    const API_BASE = 'https://ai-bot-production-4ff0.up.railway.app';
+
     async function loadRoles() {
-      const res = await fetch('/api/roles');
+      const res = await fetch(API_BASE + '/api/roles');
       const json = await res.json();
       let html = '';
       json.data.forEach(c => {
         html += `<div class="card" onclick="useCard(${c.id})">
-          <b>${c.name}</b><span class="nsfw">NSFW</span><br>
+          <b>${c.name}</b> <span class="nsfw">NSFW</span><br>
           <small>${c.system_prompt.substring(0,80)}...</small>
         </div>`;
       });
@@ -41,7 +44,7 @@
       const name = prompt("角色名称？");
       const prompt = prompt("角色设定（系统提示词）？");
       if (!name || !prompt) return;
-      await fetch('/api/create-card', {
+      await fetch(API_BASE + '/api/create-card', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({owner_id: userId, name, system_prompt: prompt})
@@ -52,7 +55,7 @@
     async function useCard(cardId) {
       const msg = prompt("发送消息给这个角色：");
       if (!msg) return;
-      const res = await fetch('/api/chat', {
+      const res = await fetch(API_BASE + '/api/chat', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({user_id: userId, message: msg, card_id: cardId})
@@ -61,7 +64,6 @@
       alert("DM回复：\n" + json.reply);
     }
 
-    // 启动
     loadRoles();
   </script>
 </body>
