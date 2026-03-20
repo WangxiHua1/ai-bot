@@ -3,4 +3,4 @@ supabase
 python-dotenv
 google-genai
 flask
-flask-cors
+
