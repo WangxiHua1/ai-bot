@@ -1,11 +1,16 @@
 import telebot
 import os
 import io
+
 from flask import Flask, request
 from supabase import create_client
 from dotenv import load_dotenv
 import google.genai as genai
 from google.genai import types
+
+import json
+from telebot.types import MenuButtonWebApp, WebAppInfo
+from flask import jsonify
 
 load_dotenv()
 
@@ -45,6 +50,59 @@ def webhook():
         bot.process_new_updates([update])
         return 'OK', 200
     return 'ERROR', 400
+    
+# ============== Mini App API（新增） ==============
+@app.route('/api/roles', methods=['GET'])
+def get_roles():
+    try:
+        res = supabase.table("role_cards").select("*").execute()
+        return jsonify({"success": True, "data": res.data})
+    except:
+        return jsonify({"success": False, "error": "数据库错误"})
+
+@app.route('/api/create-card', methods=['POST'])
+def create_card():
+    try:
+        data = request.json
+        owner_id = int(data.get("owner_id"))
+        name = data.get("name")
+        system_prompt = data.get("system_prompt")
+        res = supabase.table("role_cards").insert({
+            "owner_id": owner_id,
+            "name": name,
+            "system_prompt": system_prompt
+        }).execute()
+        return jsonify({"success": True, "card": res.data[0]})
+    except:
+        return jsonify({"success": False, "error": "创建失败"})
+
+@app.route('/api/chat', methods=['POST'])
+def api_chat():
+    try:
+        data = request.json
+        user_id = int(data.get("user_id"))
+        message = data.get("message")
+        card_id = data.get("card_id")
+
+        # 加载角色卡
+        card = None
+        if card_id:
+            res = supabase.table("role_cards").select("*").eq("id", card_id).execute()
+            if res.data: card = res.data[0]
+
+        user = get_or_create_user(user_id, "")
+        system = get_system_prompt(user["ai_level"], card)
+
+        # 使用或创建历史
+        if user_id not in histories:
+            histories[user_id] = client.chats.create(model=TEXT_MODEL)
+            histories[user_id].send_message(system)
+
+        response = histories[user_id].send_message(message)
+        return jsonify({"success": True, "reply": response.text})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)[:200]})
+
 
 
 # ============== 用户系统（加错误保护 + 匹配你的表结构） ==============
@@ -102,15 +160,32 @@ def ping(msg):
     bot.reply_to(msg, "✅ Webhook 正常！Bot 已收到消息！\n\n现在试试 /start")
 
 
+#@bot.message_handler(commands=['start'])
+#def start(msg):
+#    try:
+#        user = get_or_create_user(msg.from_user.id, msg.from_user.username)
+#        bot.reply_to(msg,
+#                     f"✅ 欢迎来到纯DND剧本杀！赠送 **5000钻石** 💎\n当前DM等级：{user['ai_level']}\n\n指令：\n/level 1-5\n/gen 生成图片\n/recharge 卡密\n/savecard 创建角色卡\n/usecard ID\n/myid 查看你的ID\n/ping 测试")
+#    except Exception as e:
+#        bot.reply_to(msg, f"启动失败：{str(e)[:100]}")
+
 @bot.message_handler(commands=['start'])
 def start(msg):
     try:
         user = get_or_create_user(msg.from_user.id, msg.from_user.username)
+        # 设置小程序菜单按钮（关键！）
+        bot.set_chat_menu_button(
+            chat_id=msg.chat.id,
+            menu_button=MenuButtonWebApp(
+                text="🎭 打开角色广场",
+                web_app=WebAppInfo(url="https://你的frontend.railway.app")  # ← 第4步填真实URL
+            )
+        )
         bot.reply_to(msg,
-                     f"✅ 欢迎来到纯DND剧本杀！赠送 **5000钻石** 💎\n当前DM等级：{user['ai_level']}\n\n指令：\n/level 1-5\n/gen 生成图片\n/recharge 卡密\n/savecard 创建角色卡\n/usecard ID\n/myid 查看你的ID\n/ping 测试")
+                     f"✅ 欢迎来到纯DND剧本杀！赠送 **5000钻石** 💎\n\n"
+                     f"👇 点击下方蓝色按钮进入**小程序界面**（角色广场+创建卡片+网页聊天）")
     except Exception as e:
         bot.reply_to(msg, f"启动失败：{str(e)[:100]}")
-
 
 @bot.message_handler(commands=['myid'])
 def my_id(msg):
@@ -269,6 +344,7 @@ if __name__ == "__main__":
     bot.remove_webhook()
     webhook_url = f"https://{RAILWAY_PUBLIC_DOMAIN}/webhook"
     bot.set_webhook(url=webhook_url, drop_pending_updates=True)
+    print("✅ Mini App API 已开启：/api/roles /api/create-card /api/chat")
     print(f"✅ Webhook 已设置为：{webhook_url}（已清除旧消息）")
 
     port = int(os.getenv("PORT", 8080))
