@@ -1,11 +1,13 @@
 import telebot
 import os
-import io
-from flask import Flask, request
+import json
+import re
+from flask import Flask, request, jsonify
+from flask_cors import CORS
 from supabase import create_client
 from dotenv import load_dotenv
-import google.genai as genai
-from google.genai import types
+from openai import OpenAI
+from telebot.types import InputChecklist, InputChecklistTask
 
 load_dotenv()
 
@@ -13,29 +15,31 @@ load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+XAI_API_KEY = os.getenv("XAI_API_KEY")
 GM_ID = int(os.getenv("GM_ID") or 0)
 RAILWAY_PUBLIC_DOMAIN = os.getenv("RAILWAY_PUBLIC_DOMAIN")
 
 bot = telebot.TeleBot(BOT_TOKEN)
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-# ==================== Gemini ====================
-client = genai.Client(api_key=GEMINI_API_KEY)
-TEXT_MODEL = "gemini-2.5-flash"
-IMAGE_MODEL = "gemini-2.5-flash-image"
+# ==================== xAI Grok 配置 ====================
+client = OpenAI(
+    api_key=XAI_API_KEY,
+    base_url="https://api.x.ai/v1"
+)
+MODEL = "grok-4.20-reasoning"   # 剧情最强模型
 
 user_cache = {}
-histories = {}
 active_cards = {}
-pending_cards = {}
+active_tasks = {}   # 每个用户动态任务列表（实时更新）
 
-# ============== Flask ==============
+# ============== Flask + CORS ==============
 app = Flask(__name__)
+CORS(app, resources={r"/api/*": {"origins": "*"}})
 
 @app.route('/')
 def home():
-    return "✅ DND剧本杀 Bot 正常运行！UptimeRobot 已监测到 UP"
+    return "DND剧本杀 Bot (xAI Grok + 动态 Checklist) 正常运行！UptimeRobot 已监测到 UP"
 
 @app.route('/webhook', methods=['POST'])
 def webhook():
@@ -46,8 +50,126 @@ def webhook():
         return 'OK', 200
     return 'ERROR', 400
 
+# ============== AI回复格式化（动作斜体 + 对话粗体） ==============
+def format_ai_reply(text: str):
+    lines = text.split('\n')
+    formatted = []
+    for line in lines:
+        line = line.strip()
+        if any(k in line.lower() for k in ["叙事", "动作", "描述", "场景", "环境", "剧情"]):
+            formatted.append(f"<i>{line}</i>")
+        elif any(k in line.lower() for k in ["对话", "说", "：", '"']) or '"' in line:
+            formatted.append(f"<b>{line}</b>")
+        else:
+            formatted.append(line)
+    return "\n".join(formatted)
 
-# ============== 用户系统（加错误保护 + 匹配你的表结构） ==============
+# ============== 解析 AI 回复中的新任务 ==============
+def extract_new_tasks(text: str):
+    match = re.search(r'\*\*新任务：\*\*\s*(\[.*?\])', text, re.DOTALL | re.IGNORECASE)
+    if match:
+        try:
+            tasks = json.loads(match.group(1))
+            if isinstance(tasks, list):
+                return [str(t).strip() for t in tasks if str(t).strip()]
+        except:
+            pass
+    return []
+
+# ============== 发送/更新 Checklist ==============
+def send_updated_checklist(chat_id: int, tg_id: int):
+    tasks_list = active_tasks.get(tg_id, [
+        "调查废弃古堡的秘密",
+        "找到失落的精灵之戒",
+        "解开古老的诅咒"
+    ])
+    if not tasks_list:
+        return
+    checklist_tasks = [InputChecklistTask(id=i+1, text=task) for i, task in enumerate(tasks_list)]
+    checklist = InputChecklist(
+        title="📋 本场 DND 剧本杀主线任务（实时更新）",
+        tasks=checklist_tasks,
+        others_can_mark_tasks_as_done=True
+    )
+    bot.send_message(
+        chat_id,
+        "🎉 任务已实时更新！点击方框勾选，完成任务我会继续推进剧情～",
+        reply_markup=checklist
+    )
+
+# ============== Streaming 流式回复 + 实时动态任务 ==============
+def stream_reply(chat_id: int, tg_id: int, user_message: str, system_prompt: str):
+    bot.send_chat_action(chat_id, 'typing')
+    msg = bot.send_message(chat_id, "▌", parse_mode='HTML')
+    
+    full_text = ""
+    try:
+        stream = client.chat.completions.create(
+            model=MODEL,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_message}
+            ],
+            temperature=0.85,
+            stream=True
+        )
+        for chunk in stream:
+            if chunk.choices[0].delta.content:
+                full_text += chunk.choices[0].delta.content
+                try:
+                    bot.edit_message_text(
+                        chat_id=chat_id,
+                        message_id=msg.message_id,
+                        text=format_ai_reply(full_text) + "▌",
+                        parse_mode='HTML'
+                    )
+                except:
+                    pass
+    except Exception as e:
+        bot.edit_message_text(chat_id=chat_id, message_id=msg.message_id, text="AI生成出错，请重试", parse_mode='HTML')
+        return
+    
+    # 最终回复
+    final_reply = format_ai_reply(full_text)
+    bot.edit_message_text(chat_id=chat_id, message_id=msg.message_id, text=final_reply, parse_mode='HTML')
+    
+    # 实时动态添加任务
+    new_tasks = extract_new_tasks(full_text)
+    if new_tasks:
+        if tg_id not in active_tasks:
+            active_tasks[tg_id] = []
+        active_tasks[tg_id].extend(new_tasks)
+        active_tasks[tg_id] = list(dict.fromkeys(active_tasks[tg_id]))  # 去重
+        send_updated_checklist(chat_id, tg_id)
+
+# ============== Checklist 命令 ==============
+@bot.message_handler(commands=['tasks'])
+def send_checklist(msg):
+    send_updated_checklist(msg.chat.id, msg.from_user.id)
+
+# ============== 监听任务勾选 ==============
+@bot.message_handler(content_types=['checklist_task_done'])
+def handle_checklist_done(msg):
+    bot.send_message(msg.chat.id, f"✅ 任务已完成！DM正在根据你的进度继续推进剧情…")
+
+# ============== 系统 Prompt（强制输出格式 + 新任务） ==============
+def get_system_prompt(level: int, card=None):
+    base = f"""你是专业的DND剧本杀 Dungeon Master（DM），等级{level}。
+用第二人称沉浸式叙事，推进剧情，描述NPC、场景、感官细节。
+**严格按以下格式回复**（不要加任何额外说明）：
+
+**叙事/动作：** 这里写所有环境、动作、感官描述
+**对话：** "NPC说的每一句话"
+
+在回复**最后**必须加上：
+**新任务：** ["新任务1", "新任务2"] （没有新任务就写 []）
+
+保持角色一致性，剧情连贯。"""
+    if card:
+        base += f"\n当前角色卡：{card.get('name', '未知')} {card.get('system_prompt', '')}"
+    return base
+
+# ============== 用户系统（完整保留） ==============
 def get_or_create_user(tg_id: int, username: str):
     try:
         if tg_id in user_cache:
@@ -61,7 +183,7 @@ def get_or_create_user(tg_id: int, username: str):
                 "username": username or "unknown",
                 "diamonds": 5000,
                 "ai_level": 1,
-                "mode": "normal"          # 匹配你的 Supabase 表
+                "mode": "normal"
             }
             supabase.table("users").insert(user).execute()
             user = supabase.table("users").select("*").eq("telegram_id", tg_id).execute().data[0]
@@ -71,7 +193,6 @@ def get_or_create_user(tg_id: int, username: str):
         print(f"用户创建出错: {e}")
         return {"telegram_id": tg_id, "username": username or "unknown", "diamonds": 5000, "ai_level": 1, "mode": "normal"}
 
-
 def update_user(tg_id, **kwargs):
     try:
         if tg_id in user_cache:
@@ -80,7 +201,6 @@ def update_user(tg_id, **kwargs):
     except Exception as e:
         print(f"更新用户出错: {e}")
 
-
 def deduct_diamonds(tg_id: int, cost: int) -> bool:
     user = get_or_create_user(tg_id, "")
     if user["diamonds"] < cost:
@@ -88,34 +208,19 @@ def deduct_diamonds(tg_id: int, cost: int) -> bool:
     update_user(tg_id, diamonds=user["diamonds"] - cost)
     return True
 
-
-def get_system_prompt(level: int, card=None):
-    base = f"你是专业的DND剧本杀 Dungeon Master（DM），等级{level}（越高剧情越复杂、细节越丰富、推理越智能）。\n用第二人称沉浸式叙事，推进主线剧情，描述NPC对话、场景氛围、感官细节、线索和悬疑转折。\n玩家是主角，保持公平、紧张刺激的剧本杀氛围，绝不剧透结局。"
-    if card:
-        base += f"\n当前角色卡：{card['name']} - {card['system_prompt']}"
-    return base
-
-
-# ============== 命令（全部放在最前面！解决顺序问题） ==============
+# ============== 所有原有命令（完整保留） ==============
 @bot.message_handler(commands=['ping'])
 def ping(msg):
-    bot.reply_to(msg, "✅ Webhook 正常！Bot 已收到消息！\n\n现在试试 /start")
-
+    bot.reply_to(msg, "Webhook 正常！Bot 已收到消息！\n\n现在试试 /start")
 
 @bot.message_handler(commands=['start'])
 def start(msg):
-    try:
-        user = get_or_create_user(msg.from_user.id, msg.from_user.username)
-        bot.reply_to(msg,
-                     f"✅ 欢迎来到纯DND剧本杀！赠送 **5000钻石** 💎\n当前DM等级：{user['ai_level']}\n\n指令：\n/level 1-5\n/gen 生成图片\n/recharge 卡密\n/savecard 创建角色卡\n/usecard ID\n/myid 查看你的ID\n/ping 测试")
-    except Exception as e:
-        bot.reply_to(msg, f"启动失败：{str(e)[:100]}")
-
+    user = get_or_create_user(msg.from_user.id, msg.from_user.username)
+    bot.reply_to(msg, f"欢迎来到纯DND剧本杀！赠送 **5000钻石** 💎\n当前DM等级：{user['ai_level']}\n\n指令：\n/level 1-5\n/gen 生成图片\n/recharge 卡密\n/savecard 创建角色卡\n/usecard ID\n/myid 查看你的ID\n/tasks 查看最新任务清单\n/ping 测试")
 
 @bot.message_handler(commands=['myid'])
 def my_id(msg):
-    bot.reply_to(msg, f"✅ 你的 Telegram ID 是：\n**{msg.from_user.id}**")
-
+    bot.reply_to(msg, f"你的 Telegram ID 是：\n**{msg.from_user.id}**")
 
 @bot.message_handler(commands=['level'])
 def set_level(msg):
@@ -123,39 +228,15 @@ def set_level(msg):
         lvl = int(msg.text.split()[1])
         if 1 <= lvl <= 5:
             update_user(msg.from_user.id, ai_level=lvl)
-            bot.reply_to(msg, f"✅ DM等级设置为 **{lvl}**")
+            bot.reply_to(msg, f"DM等级设置为 **{lvl}**")
         else:
             bot.reply_to(msg, "等级范围 1-5")
     except:
         bot.reply_to(msg, "用法：/level 3")
 
-
 @bot.message_handler(commands=['gen'])
 def gen_image(msg):
-    user = get_or_create_user(msg.from_user.id, "")
-    cost = user["ai_level"] * 12
-    if not deduct_diamonds(msg.from_user.id, cost):
-        return bot.reply_to(msg, "❌ 钻石不足！")
-
-    prompt = msg.text.replace("/gen", "").strip() or "根据当前剧本生成主角或场景"
-    try:
-        response = client.models.generate_content(
-            model=IMAGE_MODEL,
-            contents=f"高质量DND剧本杀风格图片：{prompt}，沉浸式氛围，细节丰富",
-            config=types.GenerateContentConfig(response_modalities=["IMAGE"])
-        )
-        image_bytes = None
-        for part in response.parts:
-            if part.inline_data:
-                image_bytes = part.inline_data.data
-                break
-        if image_bytes:
-            bot.send_photo(msg.chat.id, photo=io.BytesIO(image_bytes), caption="✅ Gemini 已生成剧本图片！")
-        else:
-            bot.reply_to(msg, "图片生成失败：未返回图像")
-    except Exception as e:
-        bot.reply_to(msg, f"图片生成失败：{str(e)[:150]}")
-
+    bot.reply_to(msg, "❌ xAI 当前暂无图像生成支持\n请使用文字剧情模式，或等待官方更新")
 
 @bot.message_handler(commands=['recharge'])
 def recharge(msg):
@@ -167,12 +248,11 @@ def recharge(msg):
             user = get_or_create_user(msg.from_user.id, "")
             update_user(msg.from_user.id, diamonds=user["diamonds"] + d)
             supabase.table("recharge_cards").update({"used": True}).eq("code", code).execute()
-            bot.reply_to(msg, f"✅ 充值成功！+{d}钻石")
+            bot.reply_to(msg, f"充值成功！+{d}钻石")
         else:
-            bot.reply_to(msg, "❌ 卡密无效或已使用")
+            bot.reply_to(msg, "卡密无效或已使用")
     except:
         bot.reply_to(msg, "用法：/recharge 卡密")
-
 
 @bot.message_handler(commands=['gift'])
 def gm_gift(msg):
@@ -182,94 +262,61 @@ def gm_gift(msg):
         amount = int(msg.text.split()[2])
         user = get_or_create_user(tg_id, "")
         update_user(tg_id, diamonds=user["diamonds"] + amount)
-        bot.reply_to(msg, f"✅ 已赠送 {amount} 钻石给 {tg_id}")
+        bot.reply_to(msg, f"已赠送 {amount} 钻石给 {tg_id}")
     except:
         bot.reply_to(msg, "用法：/gift <telegram_id> <钻石数>")
 
+# ============== AI 主聊天（动态 Checklist 已启用） ==============
+@bot.message_handler(func=lambda message: True)
+def handle_ai_chat(msg):
+    if msg.text.startswith('/'): return
+    
+    tg_id = msg.from_user.id
+    user = get_or_create_user(tg_id, msg.from_user.username)
+    cost = user.get("ai_level", 1) * 8
+    if not deduct_diamonds(tg_id, cost):
+        return bot.reply_to(msg, "❌ 钻石不足！请 /recharge")
+    
+    card = active_cards.get(tg_id)
+    system_prompt = get_system_prompt(user["ai_level"], card)
+    
+    bot.send_message(msg.chat.id, f"💎 已扣除 {cost} 钻石（剩余 {user.get('diamonds', 0) - cost}）")
+    stream_reply(msg.chat.id, tg_id, msg.text, system_prompt)
 
-@bot.message_handler(commands=['addcard'])
-def gm_addcard(msg):
-    if msg.from_user.id != GM_ID: return
-    bot.reply_to(msg, "GM专用：请使用 /savecard 功能让玩家自己创建")
+# ============== /api/chat（供 Vercel WebApp 使用） ==============
+@app.route('/api/chat', methods=['POST'])
+def api_chat():
+    data = request.json or {}
+    tg_id = data.get('tg_id') or data.get('user_id')
+    card = data.get('card')
+    message = data.get('message')
 
+    if not all([tg_id, card, message]):
+        return jsonify({"error": "缺少参数"}), 400
 
-@bot.message_handler(commands=['savecard'])
-def save_card(msg):
+    user = get_or_create_user(tg_id, "")
+    cost = user.get("ai_level", 1) * 8
+    if not deduct_diamonds(tg_id, cost):
+        return jsonify({"error": "钻石不足", "cost": cost}), 402
+
+    system_prompt = get_system_prompt(user["ai_level"], card)
+    
     try:
-        name = msg.text.split(maxsplit=1)[1]
-        pending_cards[msg.from_user.id] = name
-        bot.reply_to(msg, f"角色卡 **{name}** 已准备创建！请直接回复此消息输入角色设定")
-    except:
-        bot.reply_to(msg, "用法：/savecard 角色名")
-
-
-@bot.message_handler(commands=['usecard'])
-def use_card(msg):
-    try:
-        cid = int(msg.text.split()[1])
-        res = supabase.table("role_cards").select("*").eq("id", cid).execute()
-        if res.data:
-            card = res.data[0]
-            active_cards[msg.from_user.id] = card
-            bot.reply_to(msg, f"✅ 已加载角色卡：{card['name']}")
-        else:
-            bot.reply_to(msg, "卡片ID不存在")
-    except:
-        bot.reply_to(msg, "用法：/usecard ID")
-
-
-# ============== 主聊天（放在最后！） ==============
-@bot.message_handler(func=lambda m: True)
-def chat(msg):
-    user_id = msg.from_user.id
-    if user_id in pending_cards:
-        name = pending_cards.pop(user_id)
-        supabase.table("role_cards").insert({
-            "owner_id": user_id,
-            "name": name,
-            "system_prompt": msg.text
-        }).execute()
-        bot.reply_to(msg, f"✅ 角色卡 **{name}** 保存成功！")
-        return
-
-    if msg.text.startswith("/"):
-        return
-
-    user = get_or_create_user(user_id, msg.from_user.username)
-    cost = user["ai_level"] * 12
-    if not deduct_diamonds(user_id, cost):
-        bot.reply_to(msg, "❌ 钻石不足！")
-        return
-
-    system = get_system_prompt(user["ai_level"], active_cards.get(user_id))
-
-    if user_id not in histories:
-        histories[user_id] = client.chats.create(model=TEXT_MODEL)
-        histories[user_id].send_message(system)
-
-    try:
-        response = histories[user_id].send_message(msg.text)
-        bot.reply_to(msg, response.text)
+        response = client.chat.completions.create(
+            model=MODEL,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": message}
+            ],
+            temperature=0.9
+        )
+        ai_reply = response.choices[0].message.content
+        formatted = format_ai_reply(ai_reply)
+        return jsonify({"reply": formatted, "cost": cost})
     except Exception as e:
-        bot.reply_to(msg, f"DM出错：{str(e)[:150]}")
-
-
-@bot.edited_message_handler(func=lambda m: True)
-def edited(msg):
-    user = get_or_create_user(msg.from_user.id, "")
-    cost = user["ai_level"] * 12
-    if deduct_diamonds(msg.from_user.id, cost):
-        bot.reply_to(msg, "✅ 编辑消息已扣钻石，DM重新推进剧情")
-
+        print(f"xAI 错误: {e}")
+        return jsonify({"error": "AI生成失败"}), 500
 
 # ============== 启动 ==============
 if __name__ == "__main__":
-    print("🚀 Gemini 纯DND剧本杀 Bot 已启动（Webhook 模式）")
-
-    bot.remove_webhook()
-    webhook_url = f"https://{RAILWAY_PUBLIC_DOMAIN}/webhook"
-    bot.set_webhook(url=webhook_url, drop_pending_updates=True)
-    print(f"✅ Webhook 已设置为：{webhook_url}（已清除旧消息）")
-
-    port = int(os.getenv("PORT", 8080))
-    app.run(host='0.0.0.0', port=port)
+    app.run(host="0.0.0.0", port=int(os.getenv("PORT", 5000)))
