@@ -1,6 +1,6 @@
 pyTelegramBotAPI
 supabase
 python-dotenv
-google-genai
 flask
-
+openai
+flask-cors
