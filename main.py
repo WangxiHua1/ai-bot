@@ -344,6 +344,69 @@ def show_gallery(msg):
         return
     for img in generated_images[-5:]:  # 最近5张
         bot.send_photo(msg.chat.id, img["url"], caption=img["desc"])
+    
+# ====================== 前端 API 接口（新增） ======================
+@app.route('/api/characters', methods=['GET'])
+def api_characters():
+    # 返回所有公开的人物卡（探索页）
+    chars = get_all_characters()
+    return jsonify([c for c in chars if c.get("is_public", True)])
+
+@app.route('/api/my-characters', methods=['GET'])
+def api_my_characters():
+    tg_id = request.args.get('tg_id')
+    if not tg_id:
+        return jsonify({"error": "缺少 tg_id"}), 400
+    return jsonify(get_my_characters(int(tg_id)))
+
+@app.route('/api/create-character', methods=['POST'])
+def api_create_character():
+    data = request.json
+    tg_id = data.get('tg_id')
+    if not tg_id:
+        return jsonify({"error": "缺少 tg_id"}), 400
+    char = create_character(int(tg_id), data)
+    return jsonify(char), 201
+
+@app.route('/api/send-message', methods=['POST'])
+def api_send_message():
+    data = request.json
+    tg_id = data.get('tg_id')
+    char_id = data.get('char_id')
+    message = data.get('message')
+    if not all([tg_id, char_id, message]):
+        return jsonify({"error": "参数不完整"}), 400
+    
+    char = next((c for c in get_all_characters() if c["id"] == char_id), None)
+    if not char:
+        return jsonify({"error": "角色不存在"}), 404
+    
+    # 调用 xAI 生成回复
+    reply = stream_ai_reply(None, int(tg_id), message, char)  # 这里复用你原来的逻辑
+    return jsonify({"reply": reply})
+
+@app.route('/api/generate-image', methods=['POST'])
+def api_generate_image():
+    data = request.json
+    char_id = data.get('char_id')
+    prompt = data.get('prompt', '')
+    char = next((c for c in get_all_characters() if c["id"] == char_id), None)
+    if not char:
+        return jsonify({"error": "角色不存在"}), 404
+    url = generate_image(None, prompt, char["name"])
+    return jsonify({"image_url": url})
+
+@app.route('/api/balance', methods=['GET'])
+def api_balance():
+    tg_id = request.args.get('tg_id')
+    if not tg_id:
+        return jsonify({"error": "缺少 tg_id"}), 400
+    user = get_or_create_user(int(tg_id), "")
+    return jsonify({"diamonds": user["diamonds"], "ai_level": user["ai_level"]})
+
+@app.route('/api/gallery', methods=['GET'])
+def api_gallery():
+    return jsonify(generated_images[-10:])  # 最近10张
 
 # ============== 启动 ==============
 if __name__ == "__main__":
