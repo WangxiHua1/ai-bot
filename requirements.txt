@@ -1,6 +1,6 @@
-pyTelegramBotAPI
-supabase
-python-dotenv
-flask
-openai
-flask-cors
+Flask==3.0.3
+flask-cors==5.0.0
+pyTelegramBotAPI==4.23.0
+supabase==2.9.0
+python-dotenv==1.0.1
+openai==1.61.0
